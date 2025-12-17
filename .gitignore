@@ -1,0 +1,11 @@
+input
+output
+results
+work
+.nextflow*
+conf/aws.config
+conf/az-batch.config
+conf/az-registry.config
+.amlignore*
+.terraform*
+.venv
