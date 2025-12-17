@@ -27,45 +27,63 @@ Knowledge Graph Link Prediction Pipeline
 
 artemis-kgs-link-predictions is a scalable Nextflow pipeline that leverages knowledge graph embeddings to predict gene-term associations across multiple biomedical knowledge graphs. The pipeline uses PyKEEN-trained models to generate predictions for diseases, pathways, biological processes, and other biomedical entities.
 
-Built for precision medicine and drug discovery applications, artemis-kgs-link-predictions automates the entire workflow from data preparation to prediction aggregation, supporting parallel processing of thousands of terms across different knowledge graph databases.
+Built for precision medicine and drug discovery applications, artemis-kgs-link-predictions automates the entire workflow from data preparation to prediction aggregation, supporting parallel processing of terms across different knowledge graph databases using containerized execution.
 
 ## Features
 
 - **Multi-Dataset Support**: Works with Hetionet, BioKG, OpenBioLink, and PrimeKG
 - **Scalable Predictions**: Parallel processing of terms for efficient large-scale predictions
-- **Knowledge Graph Embeddings**: Utilizes PyKEEN models for accurate association scoring
+- **Knowledge Graph Embeddings**: Utilizes PyKEEN 1.11.0 models for accurate association scoring
 - **Flexible Sampling**: Optional downsampling to 10,000 terms for faster testing
-- **Cloud-Native**: Built-in S3 support for data storage and retrieval
-- **Reproducible**: Containerized execution with consistent environments
-- **Test Mode**: Quick validation with limited terms before full production runs
+- **Cloud-Native**: Built-in S3 support for model loading and data storage
+- **Reproducible**: Containerized execution with Docker and deterministic random seeds
+- **Test Mode**: Quick validation with 2 terms before full production runs
+- **Automatic Retry**: Processes automatically retry with exponential resource scaling (up to 5 retries)
 
 ## Supported Datasets
 
 ### Hetionet
-A network of biology and disease knowledge integrating 47,031 nodes (11 types) and 2,250,197 relationships (24 types). Predicts associations for:
-- Biological Processes
-- Pathways
-- Cellular Components
-- Molecular Functions
-- Anatomies
-- Compounds
-- Diseases
-- Genes
+A network of biology and disease knowledge integrating 47,031 nodes (11 types) and 2,250,197 relationships (24 types). Uses dataset-specific relation types (GpBP, GpPW, GpCC, GpMF, AeG, CbG, DaG, GiG) for predictions. Predicts associations for:
+- Biological Processes (Gene participates in Biological Process)
+- Pathways (Gene participates in Pathway)
+- Cellular Components (Gene participates in Cellular Component)
+- Molecular Functions (Gene participates in Molecular Function)
+- Anatomies (Anatomy expresses Gene)
+- Compounds (Compound binds Gene)
+- Diseases (Disease associates with Gene)
+- Genes (Gene interacts with Gene)
 
 ### BioKG
-Comprehensive biomedical knowledge graph focusing on proteins, diseases, drugs, and pathways. Extracts:
-- Human Proteins
-- Diseases
-- Pathways
-- Drugs
-- Protein Complexes
-- Genetic Disorders
+Comprehensive biomedical knowledge graph focusing on proteins, diseases, drugs, and pathways. Uses metadata files (biokg.metadata.protein.tsv, biokg.metadata.disease.tsv, biokg.metadata.pathway.tsv, biokg.metadata.drug.tsv) and links file (biokg.links.tsv) for extraction. Extracts:
+- Human Proteins (filtered by SPECIES='HUMAN')
+- Diseases (PROTEIN_DISEASE_ASSOCIATION)
+- Pathways (PROTEIN_PATHWAY_ASSOCIATION)
+- Drugs (Drug-Protein Interaction, reverse direction)
+- Protein Complexes (MEMBER_OF_COMPLEX)
+- Genetic Disorders (RELATED_GENETIC_DISORDER)
 
 ### OpenBioLink
-Large-scale open biomedical knowledge graph containing gene, disease, and phenotype associations. Uses NCBI gene information for protein-coding genes.
+Large-scale open biomedical knowledge graph containing gene, disease, and phenotype associations. Uses NCBI gene information (Homo_sapiens.gene_info) for protein-coding genes and nodes.csv for graph structure. All predictions use Gene → Term direction with relation types:
+- GENE_EXPRESSED_ANATOMY (anatomy)
+- GENE_GO (GO terms)
+- GENE_DRUG (drugs)
+- GENE_PHENOTYPE (phenotypes)
+- GENE_PATHWAY (pathways)
+- GENE_DIS (diseases)
+- GENE_GENE (gene interactions)
 
 ### PrimeKG
-Precision Medicine Knowledge Graph integrating 20+ biomedical resources with focus on drug discovery. Covers gene/protein entities across diverse biomedical contexts.
+Precision Medicine Knowledge Graph integrating 20+ biomedical resources with focus on drug discovery. Uses nodes.csv for entity extraction. All predictions use Term → Gene (reverse) direction. Covers gene/protein entities across diverse biomedical contexts:
+- anatomy (anatomy_protein_present)
+- biological_process (bioprocess_protein)
+- cellular_component (cellcomp_protein)
+- disease (disease_protein)
+- drug (drug_protein)
+- exposure (exposure_protein)
+- molecular_function (molfunc_protein)
+- pathway (pathway_protein)
+- effect/phenotype (phenotype_protein)
+- gene/protein (protein_protein)
 
 ## Pipeline Architecture
 
@@ -75,36 +93,44 @@ The pipeline consists of three main stages:
 
 ### 1. Prepare
 Extracts and processes knowledge graph data:
-- Loads the specified dataset using PyKEEN
-- Concatenates training, testing, and validation triples
-- Extracts genes and terms based on dataset-specific criteria
+- Loads the specified dataset using PyKEEN (Hetionet, BioKG, OpenBioLink, or PrimeKG)
+- Concatenates training, testing, and validation triples into a single NumPy array
+- Extracts genes and terms based on dataset-specific criteria using metadata files from S3
 - Generates hash tables mapping IDs to human-readable names
-- Optional downsampling to 10,000 terms
+- Optional downsampling to 10,000 terms using random seed 42 for reproducibility
+- Uses dataset-specific processing functions for each knowledge graph
 
 **Outputs:**
-- `triples.npy`: All knowledge graph triples
-- `terms.csv`: List of terms for prediction
-- `genes_hash_table.csv`: Gene ID to name mappings
-- `terms_hash_table.csv`: Term ID to name and type mappings
+- `triples.npy`: All knowledge graph triples (NumPy array)
+- `terms.csv`: List of terms for prediction (one per line)
+- `genes_hash_table.csv`: Gene ID to name mappings (2 columns: ID, Name)
+- `terms_hash_table.csv`: Term ID to name and type mappings (2-3 columns: ID, Name, [Type])
 
 ### 2. Predict
 Generates predictions for each term in parallel:
-- Uses trained PyKEEN models for target prediction
-- Processes each term independently for scalability
-- Determines appropriate relation types based on dataset and term type
-- Outputs individual prediction files per term
+- Uses trained PyKEEN models loaded with `torch.load` (weights_only=False)
+- Processes each term independently using Nextflow's parallel processing
+- Determines appropriate relation types and prediction direction (head→tail or tail→head) based on dataset and term type
+- Uses PyKEEN's `predict.predict_target()` function for scoring
+- Handles dataset-specific relation mappings (HETIONET_RELATIONS, BIOKG_RELATIONS, etc.)
+- Applies random seeds for reproducibility (seed=42)
+- Creates safe filenames by replacing special characters with underscores
+- Outputs individual prediction files per term in transposed format (term as row, genes as columns)
 
 **Outputs:**
-- `*_predictions.csv`: Per-term prediction files
+- `<term>_predictions.csv`: Per-term prediction files with scores rounded to 1 decimal place
 
 ### 3. Summarize
 Aggregates and annotates all predictions:
-- Combines predictions from all terms
-- Maps IDs to human-readable gene and term names
-- Generates final consolidated prediction matrix
+- Combines predictions from all terms using `collectFile` to create a metafile
+- Transposes data from terms×genes to genes×terms format
+- Maps IDs to human-readable gene and term names using hash tables
+- Sorts columns alphabetically for consistency
+- Removes duplicate genes and terms
+- Calculates final output statistics (file size, total predictions)
 
 **Outputs:**
-- `predictions.csv`: Final aggregated predictions with annotations
+- `predictions.csv`: Final aggregated predictions with gene names as rows and term names as columns
 
 ## Requirements
 
@@ -113,9 +139,10 @@ Aggregates and annotates all predictions:
 - **AWS CLI** (optional, for S3 access)
 
 ### Python Dependencies (included in Docker image)
+As specified in [requirements.txt](requirements.txt):
 - pandas
 - numpy
-- pykeen == 1.11.0
+- pykeen==1.11.0
 - torch
 - s3fs
 
@@ -144,7 +171,7 @@ nextflow -version
 ## Quick Start
 
 ### Test Run (Local)
-Run with a small subset of terms to validate setup:
+Run with 2 terms to validate setup:
 
 ```bash
 nextflow run main.nf \
@@ -152,8 +179,10 @@ nextflow run main.nf \
   --dataset hetionet \
   --model /path/to/trained_model.pkl \
   --env test \
-  --sample true
+  --sample false
 ```
+
+Note: Test mode (`--env test`) processes only the first 2 terms regardless of sampling settings.
 
 ### Production Run (Hetionet)
 Full prediction run with all terms:
@@ -195,7 +224,7 @@ nextflow run main.nf \
 
 | Profile | Description | Use Case |
 |---------|-------------|----------|
-| `local` | Local execution | Development and testing |
+| `local` | Local execution (Docker disabled, terminates on error) | Development and testing |
 | `hetionet` | Hetionet-specific config | Hetionet predictions |
 | `biokg` | BioKG-specific config | BioKG predictions |
 | `openbiolink` | OpenBioLink-specific config | OpenBioLink predictions |
@@ -208,7 +237,7 @@ nextflow run main.nf \
 nextflow run main.nf \
   -profile biokg \
   --dataset biokg \
-  --model s3://bucket/biokg/trained_model.pkl \
+  --model s3://alethiotx-artemis/data/kgs/embeddings/biokg/trained_model.pkl \
   --env test
 ```
 
@@ -217,7 +246,7 @@ nextflow run main.nf \
 nextflow run main.nf \
   -profile openbiolink \
   --dataset openbiolink \
-  --model s3://bucket/openbiolink/trained_model.pkl \
+  --model s3://alethiotx-artemis/data/kgs/embeddings/openbiolink/trained_model.pkl \
   --env prod \
   --sample false
 ```
@@ -227,10 +256,12 @@ nextflow run main.nf \
 nextflow run main.nf \
   -profile primekg \
   --dataset primekg \
-  --model s3://bucket/primekg/trained_model.pkl \
+  --model s3://alethiotx-artemis/data/kgs/embeddings/primekg/trained_model.pkl \
   --env prod \
   --sample true
 ```
+
+Note: PrimeKG profile includes increased memory allocation (48 GB) for single processes.
 
 #### 4. Custom output directory
 ```bash
@@ -256,9 +287,10 @@ All processes have automatic retry (up to 5 times) with exponential resource sca
 
 ### Dataset-Specific Configurations
 
-Each dataset profile ([conf/hetionet.config](conf/hetionet.config), [conf/biokg.config](conf/biokg.config), etc.) sets:
+Each dataset profile ([conf/hetionet.config](conf/hetionet.config), [conf/biokg.config](conf/biokg.config), [conf/openbiolink.config](conf/openbiolink.config), [conf/primekg.config](conf/primekg.config)) sets:
 - Dataset name
-- Default model path in S3
+- Default model path in S3 (`s3://alethiotx-artemis/data/kgs/embeddings/<dataset>/trained_model.pkl`)
+- Dataset-specific resource overrides (PrimeKG uses 48 GB memory for single processes)
 
 ### Custom Configuration
 
@@ -338,30 +370,60 @@ DISEASE456,Alzheimer's disease
 Prepares knowledge graph data by extracting terms, genes, and triples.
 
 **Key Functions:**
-- `validate_arguments()`: Validates command line arguments
-- `load_dataset()`: Loads PyKEEN dataset
-- `save_triples()`: Concatenates and saves all triples
-- `process_hetionet()`: Extracts Hetionet-specific terms
-- `process_biokg()`: Extracts BioKG-specific terms
-- `process_openbiolink()`: Extracts OpenBioLink-specific terms
-- `process_primekg()`: Extracts PrimeKG-specific terms
+- `set_random_seeds(seed=42)`: Sets random seeds for reproducibility
+- `validate_arguments()`: Validates command line arguments and checks supported datasets
+- `load_dataset()`: Loads PyKEEN dataset (Hetionet, BioKG, OpenBioLink, PrimeKG)
+- `save_triples()`: Concatenates train/test/validation triples and saves as NumPy array
+- `process_hetionet()`: Extracts Hetionet terms using node TSV with specific prefixes
+- `process_biokg()`: Extracts BioKG terms from metadata files (proteins, diseases, pathways, drugs) and links file
+- `process_openbiolink()`: Extracts OpenBioLink terms using NCBI gene info and nodes.csv
+- `process_primekg()`: Extracts PrimeKG terms from nodes.csv
+- `save_results()`: Saves terms, genes hash table, and terms hash table with optional downsampling
+
+**Constants:**
+- `RANDOM_SEED = 42`
+- `S3_BASE_PATH = 's3://alethiotx-artemis/data/kgs/raw'`
+- `DOWNSAMPLE_SIZE = 10000`
 
 ### [bin/predict.py](bin/predict.py)
 Generates predictions for individual terms using trained PyKEEN models.
 
 **Key Functions:**
-- `pipeline()`: Core prediction function using PyKEEN
-- Handles dataset-specific relation types
-- Supports both head→tail and tail→head predictions
+- `set_random_seeds(seed=42)`: Sets random seeds for PyTorch, NumPy, and Python random
+- `validate_arguments()`: Validates command line arguments
+- `load_data()`: Loads dataset, term, hash tables, triples, and model (torch.load with weights_only=False)
+- `get_term_type()`: Extracts term type from identifier or hash table
+- `generate_predictions()`: Core prediction function using PyKEEN's `predict.predict_target()`
+- `process_hetionet()`: Generates Hetionet predictions with dataset-specific relations
+- `process_biokg()`: Generates BioKG predictions with relation types
+- `process_openbiolink()`: Generates OpenBioLink predictions (all Gene→Term direction)
+- `process_primekg()`: Generates PrimeKG predictions (all Term→Gene direction)
+- `save_predictions()`: Saves predictions with safe filenames and rounded scores
+
+**Relation Mappings:**
+- `HETIONET_RELATIONS`: 8 relation types with direction (GpBP, GpPW, GpCC, GpMF, AeG, CbG, DaG, GiG)
+- `BIOKG_RELATIONS`: 6 relation types (PROTEIN_DISEASE_ASSOCIATION, PROTEIN_PATHWAY_ASSOCIATION, PPI, etc.)
+- `OPENBIOLINK_RELATIONS`: 7 relation types (GENE_EXPRESSED_ANATOMY, GENE_GO, etc.)
+- `PRIMEKG_RELATIONS`: 10 relation types (anatomy_protein_present, bioprocess_protein, etc.)
 
 ### [bin/summarize.py](bin/summarize.py)
 Aggregates predictions and maps IDs to human-readable names.
 
+**Key Functions:**
+- `validate_arguments()`: Validates command line arguments and checks file existence
+- `load_data()`: Loads combined predictions from metafile, transposes to genes×terms format
+- `process_predictions()`: Maps IDs to names, sorts columns alphabetically, removes duplicates
+- `save_predictions()`: Saves final predictions with file size statistics
+
 **Features:**
-- Combines all prediction files
+- Reads metafile containing paths to all prediction CSVs
+- Transposes data from terms×genes to genes×terms format
+- Creates ID→name mappings from hash tables
 - Maps gene IDs to gene names
 - Maps term IDs to term names
-- Transposes and sorts final output
+- Sorts columns alphabetically for consistency
+- Removes duplicate columns and rows
+- Calculates output statistics (file size in MB, total predictions)
 
 ## Docker Image
 
