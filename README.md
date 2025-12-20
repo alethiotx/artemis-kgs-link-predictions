@@ -458,3 +458,8 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 This project is licensed under the [MIT License](LICENSE).
 
+## Acknowledgements
+
+- Public knowledge graph providers (Hetionet, BioKG, OpenBioLink, PrimeKG)
+- PyKEEN, scikit-learn, and Nextflow communities
+- Code cleaned up and improved by GitHub Copilot (Claude Sonnet 4.5)
