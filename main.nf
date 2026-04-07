@@ -138,8 +138,13 @@ process summarize {
 
 workflow {
   
+  // Derive model and training_triples paths from dataset and embedding if not explicitly set
+  def s3_base = "${params.s3_embeddings_base}/${params.dataset}/${params.embedding}"
+  def model_path = params.model ?: "${s3_base}/trained_model.pkl"
+  def training_triples_path = params.training_triples ?: "${s3_base}/training_triples"
+
   // Step 1: Prepare knowledge graph data
-  prepare(params.training_triples)
+  prepare(training_triples_path)
 
   // Step 2: Parse terms and prepare for parallel processing
   terms = prepare
@@ -159,8 +164,8 @@ workflow {
     terms, 
     prepare.out.terms_hash_table,
     prepare.out.genes_hash_table,
-    params.training_triples,
-    params.model
+    training_triples_path,
+    model_path
   )
 
   // Step 4: Aggregate and summarize all predictions
