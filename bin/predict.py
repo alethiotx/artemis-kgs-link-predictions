@@ -7,14 +7,14 @@ on knowledge graph embeddings. It handles dataset-specific relation types and
 prediction directions for Hetionet, BioKG, OpenBioLink, and PrimeKG.
 
 Usage:
-    ./predict.py <dataset> <term> <terms_hash_table> <genes_hash_table> <triples> <model>
+    ./predict.py <dataset> <term> <terms_hash_table> <genes_hash_table> <training_triples> <model>
 
 Arguments:
     dataset: Dataset name (hetionet, biokg, openbiolink, primekg)
     term: Term to generate predictions for
     terms_hash_table: CSV mapping term IDs to names and types
     genes_hash_table: CSV mapping gene IDs to names
-    triples: NumPy array of knowledge graph triples
+    training_triples: Directory containing the upstream training triples (entity_to_id, relation_to_id, numeric_triples)
     model: Trained PyKEEN model file
 
 Output:
@@ -161,7 +161,7 @@ def validate_arguments():
     """Validate command line arguments."""
     if len(sys.argv) != 7:
         print("Error: Invalid number of arguments")
-        print("Usage: ./predict.py <dataset> <term> <terms_hash_table> <genes_hash_table> <triples> <model>")
+        print("Usage: ./predict.py <dataset> <term> <terms_hash_table> <genes_hash_table> <training_triples> <model>")
         sys.exit(1)
     
     dataset = sys.argv[1].lower()
@@ -178,7 +178,7 @@ def load_data():
     Load all required data files.
     
     Returns:
-        Tuple of (dataset, term, terms_hash_table, genes, triples, model, triples_factory)
+        Tuple of (dataset, term, terms_hash_table, genes, model, triples_factory)
     """
     print("Loading data...")
     
@@ -190,9 +190,16 @@ def load_data():
     genes_hash_table = pd.read_csv(sys.argv[4], header=None)
     genes = genes_hash_table[0].tolist()
     
-    # Load triples and create factory
-    triples = np.load(sys.argv[5])
-    triples_factory = TriplesFactory.from_labeled_triples(triples)
+    # Load triples factory from upstream training triples (preserves entity-to-ID mapping)
+    training_triples_dir = sys.argv[5]
+    triples_factory = TriplesFactory.from_path_binary(training_triples_dir)
+    
+    # Filter genes to only include those in the model's entity vocabulary
+    entity_vocab = set(triples_factory.entity_to_id.keys())
+    genes_before = len(genes)
+    genes = [g for g in genes if g in entity_vocab]
+    if len(genes) < genes_before:
+        print(f"  Filtered genes: {genes_before} -> {len(genes)} (removed {genes_before - len(genes)} not in model vocabulary)")
     
     # Load model (weights_only=False needed for full PyKEEN models with class definitions)
     model = torch.load(sys.argv[6], map_location=torch.device('cpu'), weights_only=False)
@@ -200,7 +207,8 @@ def load_data():
     print(f"  Dataset: {dataset}")
     print(f"  Term: {term}")
     print(f"  Genes: {len(genes)}")
-    print(f"  Triples: {len(triples)}")
+    print(f"  Triples factory entities: {triples_factory.num_entities}")
+    print(f"  Triples factory relations: {triples_factory.num_relations}")
     
     return dataset, term, terms_hash_table, genes, model, triples_factory
 
@@ -415,6 +423,14 @@ def main():
     
     # Load data
     dataset, term, terms_hash_table, genes, model, triples_factory = load_data()
+    
+    # Check if term exists in the model's entity vocabulary
+    entity_vocab = set(triples_factory.entity_to_id.keys())
+    if term not in entity_vocab:
+        print(f"\nWarning: Term '{term}' not in model vocabulary, writing empty predictions")
+        filename = re.sub(r'[^\w_.-]', '_', term)
+        pd.DataFrame().to_csv(f'{filename}_predictions.csv', header=False)
+        sys.exit(0)
     
     print()
     print("Generating predictions...")

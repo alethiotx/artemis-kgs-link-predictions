@@ -29,28 +29,33 @@ nextflow.enable.dsl=2
 /*
  * Process: prepare
  * ----------------
- * Prepares knowledge graph data by extracting terms, triples, and metadata.
+ * Prepares knowledge graph data by extracting terms and metadata,
+ * filtered to entities present in the upstream model's vocabulary.
+ * 
+ * Inputs:
+ *   - training_triples: Training triples directory from upstream embeddings pipeline
  * 
  * Outputs:
  *   - terms.csv: List of extracted terms for prediction
- *   - triples.npy: Concatenated triples from train/test/validation sets
  *   - genes_hash_table.csv: Gene IDs with human-readable names
  *   - terms_hash_table.csv: Term IDs with names and types
  */
 process prepare {
   label 'process_single'
 
-  publishDir "${params.outdir}/${params.dataset}/prepare", mode: 'copy'
+  publishDir "${params.outdir}/${params.dataset}/${params.embedding}/prepare", mode: 'copy'
+
+  input:
+    path training_triples
 
   output:
     path 'terms.csv', emit: terms
-    path 'triples.npy', emit: triples
     path 'genes_hash_table.csv', emit: genes_hash_table
     path 'terms_hash_table.csv', emit: terms_hash_table
   
   script:
   """
-  prepare.py ${params.dataset} ${params.sample}
+  prepare.py ${params.dataset} ${params.sample} ${training_triples}
   """
 }
 
@@ -65,7 +70,7 @@ process prepare {
  *   - term: Individual term to generate predictions for
  *   - terms_hash_table: Mapping of term IDs to names and types
  *   - genes_hash_table: Mapping of gene IDs to names
- *   - triples: All knowledge graph triples
+ *   - training_triples: Training triples directory from upstream embeddings pipeline
  *   - model: Trained prediction model
  * 
  * Outputs:
@@ -75,14 +80,14 @@ process predict {
   tag "${term}"
   label 'process_single'
 
-  publishDir "${params.outdir}/${params.dataset}/predict", mode: 'copy'
+  publishDir "${params.outdir}/${params.dataset}/${params.embedding}/predict", mode: 'copy'
 
   input:
     val dataset
     val term
     path terms_hash_table
     path genes_hash_table
-    path triples
+    path training_triples
     path model
 
   output:
@@ -90,7 +95,7 @@ process predict {
   
   script:
   """
-  predict.py ${dataset} "${term}" ${terms_hash_table} ${genes_hash_table} ${triples} ${model}
+  predict.py ${dataset} "${term}" ${terms_hash_table} ${genes_hash_table} ${training_triples} ${model}
   """
 }
 
@@ -110,7 +115,7 @@ process predict {
 process summarize {
   label 'process_low'
 
-  publishDir "${params.outdir}/${params.dataset}/summarize", mode: 'copy'
+  publishDir "${params.outdir}/${params.dataset}/${params.embedding}/summarize", mode: 'copy'
 
   input:
     path predictions
@@ -119,6 +124,7 @@ process summarize {
 
   output:
     path 'predictions.csv'
+    path 'predictions.parquet'
 
   script:
   """
@@ -133,7 +139,7 @@ process summarize {
 workflow {
   
   // Step 1: Prepare knowledge graph data
-  prepare()
+  prepare(params.training_triples)
 
   // Step 2: Parse terms and prepare for parallel processing
   terms = prepare
@@ -153,7 +159,7 @@ workflow {
     terms, 
     prepare.out.terms_hash_table,
     prepare.out.genes_hash_table,
-    prepare.out.triples,
+    params.training_triples,
     params.model
   )
 

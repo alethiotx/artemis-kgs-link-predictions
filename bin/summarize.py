@@ -117,23 +117,28 @@ def process_predictions(
     return predictions
 
 
-def save_predictions(predictions: pd.DataFrame, output_file: str = 'predictions.csv') -> None:
+def save_predictions(predictions: pd.DataFrame, output_file: str = 'predictions') -> None:
     """
-    Save predictions to CSV file.
+    Save predictions to CSV and Parquet files.
     
     Args:
         predictions: Final prediction DataFrame
-        output_file: Output filename
+        output_file: Output filename (without extension)
     """
-    print(f"\nSaving predictions to {output_file}...")
+    csv_file = f"{output_file}.csv"
+    parquet_file = f"{output_file}.parquet"
     
-    predictions.to_csv(output_file)
+    print(f"\nSaving predictions to {csv_file} and {parquet_file}...")
     
-    # Calculate file size
-    file_size = Path(output_file).stat().st_size
-    size_mb = file_size / (1024 * 1024)
+    predictions.to_csv(csv_file)
+    predictions.to_parquet(parquet_file)
     
-    print(f"  File size: {size_mb:.2f} MB")
+    # Calculate file sizes
+    csv_size_mb = Path(csv_file).stat().st_size / (1024 * 1024)
+    parquet_size_mb = Path(parquet_file).stat().st_size / (1024 * 1024)
+    
+    print(f"  CSV file size: {csv_size_mb:.2f} MB")
+    print(f"  Parquet file size: {parquet_size_mb:.2f} MB")
     print(f"  Total predictions: {predictions.size:,}")
 
 

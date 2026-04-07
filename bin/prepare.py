@@ -6,16 +6,16 @@ This script processes multiple knowledge graph datasets (Hetionet, BioKG, OpenBi
 to extract genes, terms, and triples for downstream analysis.
 
 Usage:
-    ./prepare.py <dataset> <downsample>
+    ./prepare.py <dataset> <downsample> <training_triples>
 
 Arguments:
     dataset: Dataset name - 'hetionet', 'biokg', 'openbiolink', or 'primekg'
     downsample: Whether to downsample terms to 10,000 - 'true' or 'false'
+    training_triples: Path to upstream training triples directory (contains entity_to_id, relation_to_id, numeric_triples)
 
 Outputs:
-    - triples.npy: All concatenated triples from train/test/validation sets
-    - terms.csv: Extracted terms (diseases, pathways, etc.)
-    - genes_hash_table.csv: Gene IDs with human-readable names
+    - terms.csv: Extracted terms (diseases, pathways, etc.) filtered to model vocabulary
+    - genes_hash_table.csv: Gene IDs with human-readable names, filtered to model vocabulary
     - terms_hash_table.csv: Term IDs with names and types
 
 Dependencies:
@@ -24,8 +24,8 @@ Dependencies:
     - pandas
 
 Example:
-    ./prepare.py hetionet false
-    ./prepare.py biokg true
+    ./prepare.py hetionet false /path/to/training_triples
+    ./prepare.py biokg true /path/to/training_triples
 """
 
 import sys
@@ -59,14 +59,15 @@ def set_random_seeds(seed: int = RANDOM_SEED):
 
 def validate_arguments():
     """Validate command line arguments."""
-    if len(sys.argv) != 3:
+    if len(sys.argv) != 4:
         print("Error: Invalid number of arguments")
-        print("Usage: ./prepare.py <dataset> <downsample>")
+        print("Usage: ./prepare.py <dataset> <downsample> <training_triples>")
         print(f"Supported datasets: {', '.join(SUPPORTED_DATASETS)}")
         sys.exit(1)
     
     dataset = sys.argv[1].lower()
     downsample = sys.argv[2].lower()
+    training_triples = sys.argv[3]
     
     if dataset not in SUPPORTED_DATASETS:
         print(f"Error: Unsupported dataset '{dataset}'")
@@ -77,7 +78,33 @@ def validate_arguments():
         print("Error: downsample must be 'true' or 'false'")
         sys.exit(1)
     
-    return dataset, downsample == 'true'
+    return dataset, downsample == 'true', training_triples
+
+
+def load_entity_vocabulary(training_triples_dir):
+    """Load entity vocabulary from upstream training triples directory."""
+    print(f"Loading entity vocabulary from {training_triples_dir}...")
+    triples_factory = TriplesFactory.from_path_binary(training_triples_dir)
+    entity_vocab = set(triples_factory.entity_to_id.keys())
+    print(f"  Entity vocabulary size: {len(entity_vocab)}")
+    return entity_vocab
+
+
+def get_entity_list(kg, entity_vocab):
+    """Get entity list from KG filtered to model vocabulary."""
+    print("Extracting entities from KG...")
+    all_entities = set()
+    for split in [kg.training, kg.testing, kg.validation]:
+        all_entities.update(split.entity_to_id.keys())
+    
+    # Filter to entities present in the model's vocabulary
+    filtered = [e for e in all_entities if e in entity_vocab]
+    
+    print(f"  Total KG entities: {len(all_entities)}")
+    print(f"  Entities in model vocabulary: {len(filtered)}")
+    print(f"  Filtered out: {len(all_entities) - len(filtered)}")
+    
+    return filtered
 
 
 def load_dataset(dataset_name):
@@ -92,21 +119,6 @@ def load_dataset(dataset_name):
     print(f"Loading {dataset_name} dataset...")
     return dataset_map[dataset_name]()
 
-
-def save_triples(kg):
-    """Concatenate and save all triples from the knowledge graph."""
-    print("Concatenating triples...")
-    triples = np.concatenate([
-        kg.training.triples,
-        kg.testing.triples,
-        kg.validation.triples
-    ])
-    
-    print(f"Saving {len(triples)} triples...")
-    np.save('triples.npy', triples)
-    
-    triples_factory = TriplesFactory.from_labeled_triples(triples)
-    return list(triples_factory.entity_to_id.keys())
 
 def process_hetionet(terms_all, should_downsample):
     """
@@ -183,13 +195,13 @@ def process_biokg(terms_all, should_downsample):
     
     # Complexes (from links file)
     links = pd.read_csv(f'{biokg_path}/biokg.links.tsv', sep="\t", header=None)
-    terms5 = pd.DataFrame(links[links[1] == 'MEMBER_OF_COMPLEX'][2].drop_duplicates())
+    terms5 = pd.DataFrame(links[(links[1] == 'MEMBER_OF_COMPLEX') & (links[2].isin(terms_all))][2].drop_duplicates())
     terms5.columns = [0]
     terms5[1] = 'Complex'
     terms_list.append(terms5)
     
     # Genetic disorders (from links file)
-    terms6 = pd.DataFrame(links[links[1] == 'RELATED_GENETIC_DISORDER'][2].drop_duplicates())
+    terms6 = pd.DataFrame(links[(links[1] == 'RELATED_GENETIC_DISORDER') & (links[2].isin(terms_all))][2].drop_duplicates())
     terms6.columns = [0]
     terms6[1] = 'Genetic Disorder'
     terms_list.append(terms6)
@@ -299,17 +311,21 @@ def main():
     set_random_seeds()
     
     # Validate arguments
-    dataset, should_downsample = validate_arguments()
+    dataset, should_downsample, training_triples = validate_arguments()
     
     print(f"Dataset: {dataset}")
     print(f"Downsample: {should_downsample}")
+    print(f"Training triples: {training_triples}")
     print()
     
-    # Load dataset and save triples
-    kg = load_dataset(dataset)
-    terms_all = save_triples(kg)
+    # Load entity vocabulary from upstream training triples
+    entity_vocab = load_entity_vocabulary(training_triples)
     
-    print(f"Total unique entities: {len(terms_all)}")
+    # Load dataset and get entity list filtered to model vocabulary
+    kg = load_dataset(dataset)
+    terms_all = get_entity_list(kg, entity_vocab)
+    
+    print(f"Total filtered entities: {len(terms_all)}")
     print()
     
     # Process dataset-specific extraction
