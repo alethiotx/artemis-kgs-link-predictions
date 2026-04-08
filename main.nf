@@ -5,11 +5,12 @@
  * ==============================================================
  * 
  * This workflow performs target prediction using knowledge graph embeddings
- * across multiple biomedical datasets (Hetionet, BioKG, OpenBioLink, PrimeKG)
- * and multiple embedding models (ComplEx, DistMult, RotatE, TransE).
+ * for a single dataset across all 4 embedding models (ComplEx, DistMult,
+ * RotatE, TransE).
  * 
- * By default, runs all 4 datasets × 4 embeddings (16 combinations).
- * Can be restricted to specific datasets/embeddings via parameters.
+ * Supported datasets: Hetionet, BioKG, OpenBioLink, PrimeKG
+ * 
+ * To run all 4 datasets, launch 4 separate pipeline runs via Seqera Platform.
  * 
  * Workflow steps:
  *   1. Prepare: Extract terms, triples, and metadata from knowledge graphs
@@ -17,7 +18,7 @@
  *   3. Summarize: Aggregate and annotate all predictions
  * 
  * Parameters:
- *   - params.datasets: List of dataset names (default: all 4)
+ *   - params.dataset: Dataset name (required)
  *   - params.embeddings: List of embedding model names (default: all 4)
  *   - params.sample: Whether to downsample terms (true/false)
  *   - params.outdir: Output directory for results
@@ -157,22 +158,25 @@ process summarize {
 
 workflow {
 
-  // Build channel of all dataset × embedding combinations
-  datasets_ch = Channel.from(params.datasets)
+  // Validate required parameters
+  if (!params.dataset) {
+    error "ERROR: --dataset is required. Options: hetionet, biokg, openbiolink, primekg"
+  }
+
+  // Build channel of embeddings for the single dataset
   embeddings_ch = Channel.from(params.embeddings)
-  combos = datasets_ch.combine(embeddings_ch)
-    .map { dataset, embedding ->
-      def s3_base = "${params.s3_embeddings_base}/${dataset}/${embedding}"
+    .map { embedding ->
+      def s3_base = "${params.s3_embeddings_base}/${params.dataset}/${embedding}"
       def training_triples = "${s3_base}/training_triples"
       def model = "${s3_base}/trained_model.pkl"
-      return [dataset, embedding, training_triples, model]
+      return [params.dataset, embedding, training_triples, model]
     }
 
-  // Step 1: Prepare knowledge graph data for each combination
+  // Step 1: Prepare knowledge graph data for each embedding
   prepare(
-    combos.map { it[0] },  // dataset
-    combos.map { it[1] },  // embedding
-    combos.map { it[2] }   // training_triples
+    embeddings_ch.map { it[0] },  // dataset
+    embeddings_ch.map { it[1] },  // embedding
+    embeddings_ch.map { it[2] }   // training_triples
   )
 
   // Step 2: Expand prepare results into per-term rows for parallel prediction
@@ -202,8 +206,7 @@ workflow {
     terms_ch.map { it[6] }   // model
   )
 
-  // Step 4: Group predictions by dataset/embedding and summarize
-  // Concatenate prediction CSVs into a metafile per dataset/embedding
+  // Step 4: Group predictions by embedding and summarize
   metafiles = predict.out.predictions
     .collectFile(sort: true) { dataset, embedding, pred_file ->
       ["${dataset}___${embedding}.txt", pred_file.text]

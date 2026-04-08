@@ -12,6 +12,7 @@ Knowledge Graph Link Prediction Pipeline
 - [Features](#features)
 - [Supported Datasets](#supported-datasets)
 - [Pipeline Architecture](#pipeline-architecture)
+- [Data Leakage Prevention](#data-leakage-prevention)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -27,17 +28,23 @@ Knowledge Graph Link Prediction Pipeline
 
 artemis-kgs-link-predictions is a scalable Nextflow pipeline that leverages knowledge graph embeddings to predict gene-term associations across multiple biomedical knowledge graphs. The pipeline uses PyKEEN-trained models to generate predictions for diseases, pathways, biological processes, and other biomedical entities.
 
-Built for precision medicine and drug discovery applications, artemis-kgs-link-predictions automates the entire workflow from data preparation to prediction aggregation, supporting parallel processing of terms across different knowledge graph databases using containerized execution.
+Built for precision medicine and drug discovery applications, artemis-kgs-link-predictions automates the entire workflow from data preparation to prediction aggregation. Each pipeline run processes a single dataset across all 4 embedding models (ComplEx, DistMult, RotatE, TransE) with full parallel processing of terms using containerized execution. To run all 4 datasets, launch 4 separate runs via Seqera Platform.
+
+This pipeline consumes embeddings produced by the upstream [artemis-kgs-embeddings](https://github.com/alethiotx/artemis-kgs-embeddings) pipeline, which trains models on triples that have been filtered to prevent data leakage (Drug × Clinical Gene triples are removed before training).
 
 ## Features
 
 - **Multi-Dataset Support**: Works with Hetionet, BioKG, OpenBioLink, and PrimeKG
+- **Multi-Embedding Support**: Runs ComplEx, DistMult, RotatE, and TransE models per dataset in a single invocation
 - **Scalable Predictions**: Parallel processing of terms for efficient large-scale predictions
+- **Entity Vocabulary Alignment**: Filters entities to match upstream model vocabulary, preventing silent prediction errors from entity ID mismatches
 - **Knowledge Graph Embeddings**: Utilizes PyKEEN 1.11.0 models for accurate association scoring
+- **Dual Output Formats**: Generates both CSV and Parquet prediction matrices
 - **Flexible Sampling**: Optional downsampling to 10,000 terms for faster testing
 - **Cloud-Native**: Built-in S3 support for model loading and data storage
 - **Reproducible**: Containerized execution with Docker and deterministic random seeds
 - **Test Mode**: Quick validation with 2 terms before full production runs
+- **Dynamic Resources**: PrimeKG processes automatically receive increased memory (48 GB) and CPUs
 - **Automatic Retry**: Processes automatically retry with exponential resource scaling (up to 5 retries)
 
 ## Supported Datasets
@@ -87,28 +94,28 @@ Precision Medicine Knowledge Graph integrating 20+ biomedical resources with foc
 
 ## Pipeline Architecture
 
-![](pipeline.png)
-
-The pipeline consists of three main stages:
+The pipeline consists of three main stages, executed for each dataset × embedding combination:
 
 ### 1. Prepare
-Extracts and processes knowledge graph data:
+Extracts and processes knowledge graph data, filtered to the upstream model's entity vocabulary:
 - Loads the specified dataset using PyKEEN (Hetionet, BioKG, OpenBioLink, or PrimeKG)
-- Concatenates training, testing, and validation triples into a single NumPy array
+- Loads the upstream training triples via `TriplesFactory.from_path_binary()` to obtain the model's entity vocabulary
+- Filters extracted entities to only those present in the model vocabulary, ensuring entity-to-ID alignment
 - Extracts genes and terms based on dataset-specific criteria using metadata files from S3
 - Generates hash tables mapping IDs to human-readable names
 - Optional downsampling to 10,000 terms using random seed 42 for reproducibility
-- Uses dataset-specific processing functions for each knowledge graph
 
 **Outputs:**
-- `triples.npy`: All knowledge graph triples (NumPy array)
-- `terms.csv`: List of terms for prediction (one per line)
-- `genes_hash_table.csv`: Gene ID to name mappings (2 columns: ID, Name)
+- `terms.csv`: List of terms for prediction (one per line), filtered to model vocabulary
+- `genes_hash_table.csv`: Gene ID to name mappings (2 columns: ID, Name), filtered to model vocabulary
 - `terms_hash_table.csv`: Term ID to name and type mappings (2-3 columns: ID, Name, [Type])
 
 ### 2. Predict
 Generates predictions for each term in parallel:
+- Loads the upstream training triples via `TriplesFactory.from_path_binary()` to reconstruct the exact entity-to-ID mapping used during model training
 - Uses trained PyKEEN models loaded with `torch.load` (weights_only=False)
+- Filters genes to only those in the model's entity vocabulary
+- If a term is not in the model vocabulary, writes an empty prediction CSV and exits gracefully
 - Processes each term independently using Nextflow's parallel processing
 - Determines appropriate relation types and prediction direction (head→tail or tail→head) based on dataset and term type
 - Uses PyKEEN's `predict.predict_target()` function for scoring
@@ -128,9 +135,19 @@ Aggregates and annotates all predictions:
 - Sorts columns alphabetically for consistency
 - Removes duplicate genes and terms
 - Calculates final output statistics (file size, total predictions)
+- Saves in both CSV and Parquet formats
 
 **Outputs:**
 - `predictions.csv`: Final aggregated predictions with gene names as rows and term names as columns
+- `predictions.parquet`: Same data in Apache Parquet format for efficient downstream processing
+
+## Data Leakage Prevention
+
+This pipeline is designed to work with the upstream [artemis-kgs-embeddings](https://github.com/alethiotx/artemis-kgs-embeddings) pipeline, which filters Drug × Clinical Gene triples (495 clinical genes across 7 disease CSVs) from each knowledge graph before training embeddings. This prevents the model from memorizing known drug-gene associations during training.
+
+To ensure entity alignment between the filtered model and this prediction pipeline:
+- **prepare.py** loads the upstream `training_triples/` directory to obtain the entity vocabulary, and filters all extracted genes and terms to only those present in the model's vocabulary
+- **predict.py** loads the same `training_triples/` directory via `TriplesFactory.from_path_binary()` to reconstruct the exact entity-to-ID mapping used during training, ensuring predictions use correct entity indices
 
 ## Requirements
 
@@ -145,6 +162,7 @@ As specified in [requirements.txt](requirements.txt):
 - pykeen==1.11.0
 - torch
 - s3fs
+- pyarrow
 
 ## Installation
 
@@ -171,29 +189,20 @@ nextflow -version
 ## Quick Start
 
 ### Test Run (Local)
-Run with 2 terms to validate setup:
+Run Hetionet with ComplEx and 2 terms to validate setup:
 
 ```bash
-nextflow run main.nf \
-  -profile local \
-  --dataset hetionet \
-  --model /path/to/trained_model.pkl \
-  --env test \
-  --sample false
+nextflow run main.nf -profile local
 ```
 
-Note: Test mode (`--env test`) processes only the first 2 terms regardless of sampling settings.
+This uses [conf/local.config](conf/local.config) which defaults to Hetionet/ComplEx, test mode (2 terms), and local output directory.
 
-### Production Run (Hetionet)
-Full prediction run with all terms:
+### Production Run
+Full prediction run for a single dataset across all 4 embeddings:
 
 ```bash
 nextflow run main.nf \
-  -profile hetionet \
-  --dataset hetionet \
-  --model s3://bucket/path/trained_model.pkl \
-  --env prod \
-  --sample false
+  --dataset hetionet
 ```
 
 ## Usage
@@ -202,9 +211,9 @@ nextflow run main.nf \
 
 ```bash
 nextflow run main.nf \
-  -profile <PROFILE> \
   --dataset <DATASET> \
-  --model <MODEL_PATH> \
+  [-profile <PROFILE>] \
+  [--embeddings <EMBEDDINGS>] \
   [--env <ENV>] \
   [--sample <BOOLEAN>] \
   [--outdir <OUTPUT_DIR>]
@@ -214,62 +223,56 @@ nextflow run main.nf \
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `--dataset` | Yes | `null` | Dataset name: `hetionet`, `biokg`, `openbiolink`, or `primekg` |
-| `--model` | Yes | `null` | Path to trained PyKEEN model (local or S3 URI) |
+| `--dataset` | Yes | `null` | Dataset to process: `hetionet`, `biokg`, `openbiolink`, or `primekg` |
+| `--embeddings` | No | All 4 models | Embedding models to run (default: ComplEx, DistMult, RotatE, TransE) |
 | `--env` | No | `prod` | Environment mode: `prod` (full run) or `test` (2 terms) |
 | `--sample` | No | `true` | Downsample to 10,000 terms: `true` or `false` |
 | `--outdir` | No | S3 bucket | Output directory for results |
+| `--s3_embeddings_base` | No | S3 bucket | Base S3 path for upstream embedding artifacts |
+
+Models and training triples are automatically resolved from the S3 embeddings base path:
+- Model: `{s3_embeddings_base}/{dataset}/{embedding}/trained_model.pkl`
+- Training triples: `{s3_embeddings_base}/{dataset}/{embedding}/training_triples/`
 
 ### Profiles
 
 | Profile | Description | Use Case |
 |---------|-------------|----------|
-| `local` | Local execution (Docker disabled, terminates on error) | Development and testing |
-| `hetionet` | Hetionet-specific config | Hetionet predictions |
-| `biokg` | BioKG-specific config | BioKG predictions |
-| `openbiolink` | OpenBioLink-specific config | OpenBioLink predictions |
-| `primekg` | PrimeKG-specific config | PrimeKG predictions |
+| `local` | Local execution, Docker disabled, Hetionet/ComplEx, test mode | Development and testing |
+| `standard` | Default profile with base resource configuration | Production runs |
 
 ### Examples
 
-#### 1. Test run with BioKG (2 terms only)
+#### 1. Hetionet with all embeddings
 ```bash
-nextflow run main.nf \
-  -profile biokg \
-  --dataset biokg \
-  --model s3://alethiotx-artemis/data/kgs/embeddings/biokg/trained_model.pkl \
-  --env test
+nextflow run main.nf --dataset hetionet
 ```
 
-#### 2. Full production run with OpenBioLink (no sampling)
+#### 2. PrimeKG with all embeddings (no sampling)
 ```bash
-nextflow run main.nf \
-  -profile openbiolink \
-  --dataset openbiolink \
-  --model s3://alethiotx-artemis/data/kgs/embeddings/openbiolink/trained_model.pkl \
-  --env prod \
-  --sample false
+nextflow run main.nf --dataset primekg --sample false
 ```
 
-#### 3. Sampled production run with PrimeKG (10,000 terms)
+#### 3. Single embedding only
 ```bash
-nextflow run main.nf \
-  -profile primekg \
-  --dataset primekg \
-  --model s3://alethiotx-artemis/data/kgs/embeddings/primekg/trained_model.pkl \
-  --env prod \
-  --sample true
+nextflow run main.nf --dataset biokg --embeddings ComplEx
 ```
 
-Note: PrimeKG profile includes increased memory allocation (48 GB) for single processes.
-
-#### 4. Custom output directory
+#### 4. Test mode (2 terms only)
 ```bash
-nextflow run main.nf \
-  -profile hetionet \
-  --dataset hetionet \
-  --model /local/path/trained_model.pkl \
-  --outdir /custom/output/path
+nextflow run main.nf --dataset openbiolink --env test
+```
+
+#### 5. Custom output directory
+```bash
+nextflow run main.nf --dataset hetionet --outdir /custom/output/path
+```
+
+#### 6. Run all 4 datasets (bash loop)
+```bash
+for dataset in hetionet biokg openbiolink primekg; do
+  nextflow run main.nf --dataset $dataset -resume
+done
 ```
 
 ## Configuration
@@ -285,12 +288,21 @@ Defines resource allocation for process labels:
 
 All processes have automatic retry (up to 5 times) with exponential resource scaling.
 
-### Dataset-Specific Configurations
+### Dynamic Resource Allocation
 
-Each dataset profile ([conf/hetionet.config](conf/hetionet.config), [conf/biokg.config](conf/biokg.config), [conf/openbiolink.config](conf/openbiolink.config), [conf/primekg.config](conf/primekg.config)) sets:
-- Dataset name
-- Default model path in S3 (`s3://alethiotx-artemis/data/kgs/embeddings/<dataset>/trained_model.pkl`)
-- Dataset-specific resource overrides (PrimeKG uses 48 GB memory for single processes)
+The `prepare` and `predict` processes dynamically allocate resources based on the dataset:
+- **PrimeKG**: 2 CPUs, 48 GB memory (scales with retry attempts)
+- **All other datasets**: 1 CPU, 4 GB memory (scales with retry attempts)
+
+### Local Configuration ([conf/local.config](conf/local.config))
+
+Overrides for local development:
+- Dataset: `hetionet`, Embedding: `ComplEx` only
+- Output to local `output/` directory
+- Test mode (`env = 'test'`)
+- No downsampling (`sample = false`)
+- Docker disabled
+- Terminate on error (no retries)
 
 ### Custom Configuration
 
@@ -299,8 +311,6 @@ Create a custom config file:
 ```nextflow
 // custom.config
 params {
-    dataset = 'hetionet'
-    model = '/my/custom/model.pkl'
     sample = false
 }
 
@@ -314,7 +324,7 @@ process {
 
 Run with custom config:
 ```bash
-nextflow run main.nf -c custom.config -profile hetionet
+nextflow run main.nf --dataset hetionet -c custom.config
 ```
 
 ## Output Files
@@ -324,22 +334,25 @@ nextflow run main.nf -c custom.config -profile hetionet
 ```
 <outdir>/
 └── <dataset>/
-    ├── prepare/
-    │   ├── terms.csv                    # List of terms for prediction
-    │   ├── triples.npy                  # All knowledge graph triples
-    │   ├── genes_hash_table.csv         # Gene ID to name mapping
-    │   └── terms_hash_table.csv         # Term ID to name/type mapping
-    ├── predict/
-    │   ├── term1_predictions.csv        # Predictions for term 1
-    │   ├── term2_predictions.csv        # Predictions for term 2
-    │   └── ...
-    └── summarize/
-        └── predictions.csv              # Final aggregated predictions
+    └── <embedding>/
+        ├── prepare/
+        │   ├── terms.csv                    # List of terms for prediction
+        │   ├── genes_hash_table.csv         # Gene ID to name mapping
+        │   └── terms_hash_table.csv         # Term ID to name/type mapping
+        ├── predict/
+        │   ├── term1_predictions.csv        # Predictions for term 1
+        │   ├── term2_predictions.csv        # Predictions for term 2
+        │   └── ...
+        └── summarize/
+            ├── predictions.csv              # Final aggregated predictions (CSV)
+            └── predictions.parquet          # Final aggregated predictions (Parquet)
 ```
+
+Each pipeline run produces output directories for the specified dataset across all embeddings (4 directories by default).
 
 ### Output File Formats
 
-#### predictions.csv (Final Output)
+#### predictions.csv / predictions.parquet (Final Output)
 Matrix format with genes as rows and terms as columns:
 ```
 Gene Name,Disease A,Pathway B,Biological Process C
@@ -367,13 +380,16 @@ DISEASE456,Alzheimer's disease
 ## Pipeline Scripts
 
 ### [bin/prepare.py](bin/prepare.py)
-Prepares knowledge graph data by extracting terms, genes, and triples.
+Prepares knowledge graph data by extracting terms and genes, filtered to the upstream model's entity vocabulary.
+
+**Usage:** `./prepare.py <dataset> <downsample> <training_triples>`
 
 **Key Functions:**
 - `set_random_seeds(seed=42)`: Sets random seeds for reproducibility
-- `validate_arguments()`: Validates command line arguments and checks supported datasets
+- `validate_arguments()`: Validates 3 command line arguments (dataset, downsample, training_triples)
+- `load_entity_vocabulary()`: Loads entity vocabulary from upstream training triples via `TriplesFactory.from_path_binary()`
 - `load_dataset()`: Loads PyKEEN dataset (Hetionet, BioKG, OpenBioLink, PrimeKG)
-- `save_triples()`: Concatenates train/test/validation triples and saves as NumPy array
+- `get_entity_list()`: Extracts entities from KG and filters to model vocabulary
 - `process_hetionet()`: Extracts Hetionet terms using node TSV with specific prefixes
 - `process_biokg()`: Extracts BioKG terms from metadata files (proteins, diseases, pathways, drugs) and links file
 - `process_openbiolink()`: Extracts OpenBioLink terms using NCBI gene info and nodes.csv
@@ -388,10 +404,12 @@ Prepares knowledge graph data by extracting terms, genes, and triples.
 ### [bin/predict.py](bin/predict.py)
 Generates predictions for individual terms using trained PyKEEN models.
 
+**Usage:** `./predict.py <dataset> <term> <terms_hash_table> <genes_hash_table> <training_triples> <model>`
+
 **Key Functions:**
 - `set_random_seeds(seed=42)`: Sets random seeds for PyTorch, NumPy, and Python random
-- `validate_arguments()`: Validates command line arguments
-- `load_data()`: Loads dataset, term, hash tables, triples, and model (torch.load with weights_only=False)
+- `validate_arguments()`: Validates 6 command line arguments
+- `load_data()`: Loads training triples via `TriplesFactory.from_path_binary()`, filters genes to model vocabulary, loads model with `torch.load(weights_only=False)`
 - `get_term_type()`: Extracts term type from identifier or hash table
 - `generate_predictions()`: Core prediction function using PyKEEN's `predict.predict_target()`
 - `process_hetionet()`: Generates Hetionet predictions with dataset-specific relations
@@ -399,6 +417,10 @@ Generates predictions for individual terms using trained PyKEEN models.
 - `process_openbiolink()`: Generates OpenBioLink predictions (all Gene→Term direction)
 - `process_primekg()`: Generates PrimeKG predictions (all Term→Gene direction)
 - `save_predictions()`: Saves predictions with safe filenames and rounded scores
+
+**Safety Features:**
+- Terms not present in the model vocabulary produce an empty CSV and exit successfully
+- Genes are filtered to model vocabulary before prediction
 
 **Relation Mappings:**
 - `HETIONET_RELATIONS`: 8 relation types with direction (GpBP, GpPW, GpCC, GpMF, AeG, CbG, DaG, GiG)
@@ -409,21 +431,13 @@ Generates predictions for individual terms using trained PyKEEN models.
 ### [bin/summarize.py](bin/summarize.py)
 Aggregates predictions and maps IDs to human-readable names.
 
+**Usage:** `./summarize.py <metafile> <genes_hash_table> <terms_hash_table>`
+
 **Key Functions:**
 - `validate_arguments()`: Validates command line arguments and checks file existence
 - `load_data()`: Loads combined predictions from metafile, transposes to genes×terms format
 - `process_predictions()`: Maps IDs to names, sorts columns alphabetically, removes duplicates
-- `save_predictions()`: Saves final predictions with file size statistics
-
-**Features:**
-- Reads metafile containing paths to all prediction CSVs
-- Transposes data from terms×genes to genes×terms format
-- Creates ID→name mappings from hash tables
-- Maps gene IDs to gene names
-- Maps term IDs to term names
-- Sorts columns alphabetically for consistency
-- Removes duplicate columns and rows
-- Calculates output statistics (file size in MB, total predictions)
+- `save_predictions()`: Saves final predictions in both CSV and Parquet formats with file size statistics
 
 ## Docker Image
 
@@ -439,6 +453,7 @@ public.ecr.aws/alethiotx/artemis-kgs-embeddings:latest
 - PyTorch
 - pandas, numpy
 - s3fs for S3 access
+- pyarrow for Parquet output
 
 To use a custom image, modify [nextflow.config](nextflow.config):
 ```nextflow
