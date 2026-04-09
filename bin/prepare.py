@@ -168,42 +168,50 @@ def process_biokg(terms_all, should_downsample):
     genes_hash_table = genes_hash_table[genes_hash_table[0].isin(human_uniprot_ids)]
     
     # Extract different term types
+    # Hash table format: [term_id, name, type] (3 columns, consistent with other datasets)
     terms_list = []
     
     # Human proteins
-    terms1 = protein[(protein[0].isin(terms_all)) & (protein[1] == 'SPECIES') & (protein[2] == 'HUMAN')][[0]]
-    terms1[1] = 'Protein'
+    human_protein_ids = protein[(protein[0].isin(terms_all)) & (protein[1] == 'SPECIES') & (protein[2] == 'HUMAN')][0]
+    terms1 = protein[(protein[0].isin(human_protein_ids)) & (protein[1] == 'NAME')][[0, 2]].copy()
+    terms1.columns = [0, 1]
+    terms1[2] = 'Protein'
     terms_list.append(terms1)
     
     # Diseases
     disease = pd.read_csv(f'{biokg_path}/biokg.metadata.disease.tsv', sep="\t", header=None)
-    terms2 = disease[(disease[0].isin(terms_all)) & (disease[1] == 'NAME')][[0]]
-    terms2[1] = 'Disease'
+    terms2 = disease[(disease[0].isin(terms_all)) & (disease[1] == 'NAME')][[0, 2]].copy()
+    terms2.columns = [0, 1]
+    terms2[2] = 'Disease'
     terms_list.append(terms2)
     
     # Pathways
     pathway = pd.read_csv(f'{biokg_path}/biokg.metadata.pathway.tsv', sep="\t", header=None)
-    terms3 = pathway[(pathway[0].isin(terms_all)) & (pathway[1] == 'NAME')][[0]]
-    terms3[1] = 'Pathway'
+    terms3 = pathway[(pathway[0].isin(terms_all)) & (pathway[1] == 'NAME')][[0, 2]].copy()
+    terms3.columns = [0, 1]
+    terms3[2] = 'Pathway'
     terms_list.append(terms3)
     
     # Drugs
     drug = pd.read_csv(f'{biokg_path}/biokg.metadata.drug.tsv', sep="\t", header=None)
-    terms4 = drug[(drug[0].isin(terms_all)) & (drug[1] == 'NAME')][[0]]
-    terms4[1] = 'Drug'
+    terms4 = drug[(drug[0].isin(terms_all)) & (drug[1] == 'NAME')][[0, 2]].copy()
+    terms4.columns = [0, 1]
+    terms4[2] = 'Drug'
     terms_list.append(terms4)
     
-    # Complexes (from links file)
+    # Complexes (from links file, no metadata names available - use ID as name)
     links = pd.read_csv(f'{biokg_path}/biokg.links.tsv', sep="\t", header=None)
     terms5 = pd.DataFrame(links[(links[1] == 'MEMBER_OF_COMPLEX') & (links[2].isin(terms_all))][2].drop_duplicates())
     terms5.columns = [0]
-    terms5[1] = 'Complex'
+    terms5[1] = terms5[0]
+    terms5[2] = 'Complex'
     terms_list.append(terms5)
     
-    # Genetic disorders (from links file)
+    # Genetic disorders (from links file, no metadata names available - use ID as name)
     terms6 = pd.DataFrame(links[(links[1] == 'RELATED_GENETIC_DISORDER') & (links[2].isin(terms_all))][2].drop_duplicates())
     terms6.columns = [0]
-    terms6[1] = 'Genetic Disorder'
+    terms6[1] = terms6[0]
+    terms6[2] = 'Genetic Disorder'
     terms_list.append(terms6)
     
     # Combine all terms

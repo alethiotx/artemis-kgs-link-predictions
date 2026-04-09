@@ -233,9 +233,8 @@ def get_term_type(term: str, terms_hash_table: DataFrame, dataset: str) -> str:
         if len(term_row) == 0:
             raise ValueError(f"Term '{term}' not found in hash table")
         
-        # Column index depends on dataset
-        type_col = 1 if dataset == 'biokg' else 2
-        return term_row[type_col].values[0]
+        # Type is always in column 2 (hash table format: id, name, type)
+        return term_row[2].values[0]
 
 
 def process_hetionet(
