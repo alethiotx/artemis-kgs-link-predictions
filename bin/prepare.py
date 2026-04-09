@@ -171,10 +171,11 @@ def process_biokg(terms_all, should_downsample):
     # Hash table format: [term_id, name, type] (3 columns, consistent with other datasets)
     terms_list = []
     
-    # Human proteins
-    human_protein_ids = protein[(protein[0].isin(terms_all)) & (protein[1] == 'SPECIES') & (protein[2] == 'HUMAN')][0]
-    terms1 = protein[(protein[0].isin(human_protein_ids)) & (protein[1] == 'NAME')][[0, 2]].copy()
-    terms1.columns = [0, 1]
+    # Human proteins - get IDs from SPECIES rows, then join names from NAME rows
+    human_protein_ids = protein[(protein[0].isin(terms_all)) & (protein[1] == 'SPECIES') & (protein[2] == 'HUMAN')][[0]]
+    protein_names = protein[protein[1] == 'NAME'][[0, 2]].rename(columns={2: 1})
+    terms1 = human_protein_ids.merge(protein_names, on=0, how='left')
+    terms1[1] = terms1[1].fillna(terms1[0])  # fallback to ID if no name
     terms1[2] = 'Protein'
     terms_list.append(terms1)
     
