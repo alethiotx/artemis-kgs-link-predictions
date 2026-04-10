@@ -7,11 +7,13 @@ on knowledge graph embeddings. It handles dataset-specific relation types and
 prediction directions for Hetionet, BioKG, OpenBioLink, and PrimeKG.
 
 Usage:
-    ./predict.py <dataset> <terms_file> <terms_hash_table> <genes_hash_table> <training_triples> <model>
+    ./predict.py <dataset> <terms_csv> <batch_start> <batch_size> <terms_hash_table> <genes_hash_table> <training_triples> <model>
 
 Arguments:
     dataset: Dataset name (hetionet, biokg, openbiolink, primekg)
-    terms_file: File containing terms to generate predictions for (one per line)
+    terms_csv: CSV file containing all terms (one per line)
+    batch_start: Starting index into terms_csv for this batch
+    batch_size: Number of terms to process from batch_start
     terms_hash_table: CSV mapping term IDs to names and types
     genes_hash_table: CSV mapping gene IDs to names
     training_triples: Directory containing the upstream training triples (entity_to_id, relation_to_id, numeric_triples)
@@ -159,9 +161,9 @@ def set_random_seeds(seed: int = RANDOM_SEED):
 
 def validate_arguments():
     """Validate command line arguments."""
-    if len(sys.argv) != 7:
+    if len(sys.argv) != 9:
         print("Error: Invalid number of arguments")
-        print("Usage: ./predict.py <dataset> <term> <terms_hash_table> <genes_hash_table> <training_triples> <model>")
+        print("Usage: ./predict.py <dataset> <terms_csv> <batch_start> <batch_size> <terms_hash_table> <genes_hash_table> <training_triples> <model>")
         sys.exit(1)
     
     dataset = sys.argv[1].lower()
@@ -184,17 +186,20 @@ def load_data():
     
     dataset = sys.argv[1].lower()
     
-    # Read terms from batch file
+    # Read terms from CSV and slice to batch range
     with open(sys.argv[2]) as f:
-        terms = [line.strip().strip('"') for line in f if line.strip()]
+        all_terms = [line.strip().strip('"') for line in f if line.strip()]
+    batch_start = int(sys.argv[3])
+    batch_size = int(sys.argv[4])
+    terms = all_terms[batch_start:batch_start + batch_size]
     
     # Load hash tables
-    terms_hash_table = pd.read_csv(sys.argv[3], header=None)
-    genes_hash_table = pd.read_csv(sys.argv[4], header=None)
+    terms_hash_table = pd.read_csv(sys.argv[5], header=None)
+    genes_hash_table = pd.read_csv(sys.argv[6], header=None)
     genes = genes_hash_table[0].tolist()
     
     # Load triples factory from upstream training triples (preserves entity-to-ID mapping)
-    training_triples_dir = sys.argv[5]
+    training_triples_dir = sys.argv[7]
     triples_factory = TriplesFactory.from_path_binary(training_triples_dir)
     
     # Filter genes to only include those in the model's entity vocabulary
@@ -205,10 +210,10 @@ def load_data():
         print(f"  Filtered genes: {genes_before} -> {len(genes)} (removed {genes_before - len(genes)} not in model vocabulary)")
     
     # Load model (weights_only=False needed for full PyKEEN models with class definitions)
-    model = torch.load(sys.argv[6], map_location=torch.device('cpu'), weights_only=False)
+    model = torch.load(sys.argv[8], map_location=torch.device('cpu'), weights_only=False)
     
     print(f"  Dataset: {dataset}")
-    print(f"  Terms: {len(terms)}")
+    print(f"  Terms: {len(terms)} (batch {batch_start}:{batch_start + batch_size} of {len(all_terms)})")
     print(f"  Genes: {len(genes)}")
     print(f"  Triples factory entities: {triples_factory.num_entities}")
     print(f"  Triples factory relations: {triples_factory.num_relations}")

@@ -78,7 +78,9 @@ process prepare {
  * Inputs:
  *   - dataset: Name of the dataset being processed
  *   - embedding: Name of the embedding model
- *   - terms_batch: Batch of terms (newline-separated) to generate predictions for
+ *   - batch_start: Starting index into terms.csv for this batch
+ *   - batch_size: Number of terms to process in this batch
+ *   - terms_csv: Full list of terms from prepare step
  *   - terms_hash_table: Mapping of term IDs to names and types
  *   - genes_hash_table: Mapping of gene IDs to names
  *   - training_triples: Training triples directory from upstream embeddings pipeline
@@ -88,7 +90,7 @@ process prepare {
  *   - *_predictions.csv: Predictions for each term in the batch
  */
 process predict {
-  tag "${dataset}/${embedding}"
+  tag "${dataset}/${embedding}/${batch_start}"
   label 'process_single'
   cpus { dataset == 'primekg' ? 2 : 1 }
   memory { dataset == 'primekg' ? 48.GB * task.attempt : 4.GB * task.attempt }
@@ -98,7 +100,9 @@ process predict {
   input:
     val dataset
     val embedding
-    val terms_batch
+    val batch_start
+    val batch_size
+    path terms_csv
     path terms_hash_table
     path genes_hash_table
     path training_triples
@@ -109,10 +113,7 @@ process predict {
   
   script:
   """
-  cat <<'TERMS_EOF' > terms_batch.txt
-${terms_batch}
-TERMS_EOF
-  predict.py ${dataset} terms_batch.txt ${terms_hash_table} ${genes_hash_table} ${training_triples} ${model}
+  predict.py ${dataset} ${terms_csv} ${batch_start} ${batch_size} ${terms_hash_table} ${genes_hash_table} ${training_triples} ${model}
   """
 }
 
@@ -182,21 +183,21 @@ workflow {
     embeddings_ch.map { it[2] }   // training_triples
   )
 
-  // Step 2: Expand prepare results into batched terms for parallel prediction
+  // Step 2: Expand prepare results into batch indices for parallel prediction
   terms_ch = prepare.out.results
     .flatMap { dataset, embedding, terms_csv, genes_hash, terms_hash ->
       def s3_base = "${params.s3_embeddings_base}/${dataset}/${embedding}"
       def training_triples = "${s3_base}/training_triples"
       def model = "${s3_base}/trained_model.pkl"
       def lines = terms_csv.text.trim().split('\n')
-      def term_list = lines.collect { it.trim().replaceAll('^"|"$', '') }
+      def term_count = lines.size()
       if (params.env == 'test') {
-        term_list = term_list.take(2)
+        term_count = Math.min(2, term_count)
       }
-      // Group terms into batches to reduce total task count
-      def batches = term_list.collate(params.batch_size)
-      return batches.collect { batch ->
-        [dataset, embedding, batch.join('\n'), terms_hash, genes_hash, training_triples, model]
+      // Generate batch start indices
+      def batch_starts = (0..<term_count).step(params.batch_size)
+      return batch_starts.collect { start ->
+        [dataset, embedding, start, params.batch_size, terms_csv, terms_hash, genes_hash, training_triples, model]
       }
     }
 
@@ -204,11 +205,13 @@ workflow {
   predict(
     terms_ch.map { it[0] },  // dataset
     terms_ch.map { it[1] },  // embedding
-    terms_ch.map { it[2] },  // terms_batch
-    terms_ch.map { it[3] },  // terms_hash_table
-    terms_ch.map { it[4] },  // genes_hash_table
-    terms_ch.map { it[5] },  // training_triples
-    terms_ch.map { it[6] }   // model
+    terms_ch.map { it[2] },  // batch_start
+    terms_ch.map { it[3] },  // batch_size
+    terms_ch.map { it[4] },  // terms_csv
+    terms_ch.map { it[5] },  // terms_hash_table
+    terms_ch.map { it[6] },  // genes_hash_table
+    terms_ch.map { it[7] },  // training_triples
+    terms_ch.map { it[8] }   // model
   )
 
   // Step 4: Group predictions by embedding and summarize
