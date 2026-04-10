@@ -78,17 +78,17 @@ process prepare {
  * Inputs:
  *   - dataset: Name of the dataset being processed
  *   - embedding: Name of the embedding model
- *   - term: Individual term to generate predictions for
+ *   - terms_batch: Batch of terms (newline-separated) to generate predictions for
  *   - terms_hash_table: Mapping of term IDs to names and types
  *   - genes_hash_table: Mapping of gene IDs to names
  *   - training_triples: Training triples directory from upstream embeddings pipeline
  *   - model: Trained prediction model
  * 
  * Outputs:
- *   - *_predictions.csv: Predictions for the given term
+ *   - *_predictions.csv: Predictions for each term in the batch
  */
 process predict {
-  tag "${dataset}/${embedding}/${term}"
+  tag "${dataset}/${embedding}"
   label 'process_single'
   cpus { dataset == 'primekg' ? 2 : 1 }
   memory { dataset == 'primekg' ? 48.GB * task.attempt : 4.GB * task.attempt }
@@ -98,7 +98,7 @@ process predict {
   input:
     val dataset
     val embedding
-    val term
+    val terms_batch
     path terms_hash_table
     path genes_hash_table
     path training_triples
@@ -109,7 +109,10 @@ process predict {
   
   script:
   """
-  predict.py ${dataset} "${term}" ${terms_hash_table} ${genes_hash_table} ${training_triples} ${model}
+  cat <<'TERMS_EOF' > terms_batch.txt
+${terms_batch}
+TERMS_EOF
+  predict.py ${dataset} terms_batch.txt ${terms_hash_table} ${genes_hash_table} ${training_triples} ${model}
   """
 }
 
@@ -179,7 +182,7 @@ workflow {
     embeddings_ch.map { it[2] }   // training_triples
   )
 
-  // Step 2: Expand prepare results into per-term rows for parallel prediction
+  // Step 2: Expand prepare results into batched terms for parallel prediction
   terms_ch = prepare.out.results
     .flatMap { dataset, embedding, terms_csv, genes_hash, terms_hash ->
       def s3_base = "${params.s3_embeddings_base}/${dataset}/${embedding}"
@@ -190,16 +193,18 @@ workflow {
       if (params.env == 'test') {
         term_list = term_list.take(2)
       }
-      return term_list.collect { term ->
-        [dataset, embedding, term, terms_hash, genes_hash, training_triples, model]
+      // Group terms into batches to reduce total task count
+      def batches = term_list.collate(params.batch_size)
+      return batches.collect { batch ->
+        [dataset, embedding, batch.join('\n'), terms_hash, genes_hash, training_triples, model]
       }
     }
 
-  // Step 3: Generate predictions for each term in parallel
+  // Step 3: Generate predictions for each term batch in parallel
   predict(
     terms_ch.map { it[0] },  // dataset
     terms_ch.map { it[1] },  // embedding
-    terms_ch.map { it[2] },  // term
+    terms_ch.map { it[2] },  // terms_batch
     terms_ch.map { it[3] },  // terms_hash_table
     terms_ch.map { it[4] },  // genes_hash_table
     terms_ch.map { it[5] },  // training_triples
@@ -208,6 +213,7 @@ workflow {
 
   // Step 4: Group predictions by embedding and summarize
   metafiles = predict.out.predictions
+    .transpose()
     .collectFile(sort: true) { dataset, embedding, pred_file ->
       ["${dataset}___${embedding}.txt", pred_file.text]
     }

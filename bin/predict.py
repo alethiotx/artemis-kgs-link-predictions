@@ -7,18 +7,18 @@ on knowledge graph embeddings. It handles dataset-specific relation types and
 prediction directions for Hetionet, BioKG, OpenBioLink, and PrimeKG.
 
 Usage:
-    ./predict.py <dataset> <term> <terms_hash_table> <genes_hash_table> <training_triples> <model>
+    ./predict.py <dataset> <terms_file> <terms_hash_table> <genes_hash_table> <training_triples> <model>
 
 Arguments:
     dataset: Dataset name (hetionet, biokg, openbiolink, primekg)
-    term: Term to generate predictions for
+    terms_file: File containing terms to generate predictions for (one per line)
     terms_hash_table: CSV mapping term IDs to names and types
     genes_hash_table: CSV mapping gene IDs to names
     training_triples: Directory containing the upstream training triples (entity_to_id, relation_to_id, numeric_triples)
     model: Trained PyKEEN model file
 
 Output:
-    <term>_predictions.csv: Prediction scores for the given term
+    <term>_predictions.csv: Prediction scores for each term in the batch
 
 Dependencies:
     - pykeen
@@ -178,12 +178,15 @@ def load_data():
     Load all required data files.
     
     Returns:
-        Tuple of (dataset, term, terms_hash_table, genes, model, triples_factory)
+        Tuple of (dataset, terms, terms_hash_table, genes, model, triples_factory)
     """
     print("Loading data...")
     
     dataset = sys.argv[1].lower()
-    term = sys.argv[2]
+    
+    # Read terms from batch file
+    with open(sys.argv[2]) as f:
+        terms = [line.strip().strip('"') for line in f if line.strip()]
     
     # Load hash tables
     terms_hash_table = pd.read_csv(sys.argv[3], header=None)
@@ -205,12 +208,12 @@ def load_data():
     model = torch.load(sys.argv[6], map_location=torch.device('cpu'), weights_only=False)
     
     print(f"  Dataset: {dataset}")
-    print(f"  Term: {term}")
+    print(f"  Terms: {len(terms)}")
     print(f"  Genes: {len(genes)}")
     print(f"  Triples factory entities: {triples_factory.num_entities}")
     print(f"  Triples factory relations: {triples_factory.num_relations}")
     
-    return dataset, term, terms_hash_table, genes, model, triples_factory
+    return dataset, terms, terms_hash_table, genes, model, triples_factory
 
 def get_term_type(term: str, terms_hash_table: DataFrame, dataset: str) -> str:
     """
@@ -421,41 +424,42 @@ def main():
     validate_arguments()
     
     # Load data
-    dataset, term, terms_hash_table, genes, model, triples_factory = load_data()
+    dataset, terms, terms_hash_table, genes, model, triples_factory = load_data()
     
-    # Check if term exists in the model's entity vocabulary
     entity_vocab = set(triples_factory.entity_to_id.keys())
-    if term not in entity_vocab:
-        print(f"\nWarning: Term '{term}' not in model vocabulary, writing empty predictions")
-        filename = re.sub(r'[^\w_.-]', '_', term)
-        pd.DataFrame().to_csv(f'{filename}_predictions.csv', header=False)
-        sys.exit(0)
     
-    print()
-    print("Generating predictions...")
+    print(f"\nProcessing {len(terms)} terms...")
     
-    # Process dataset-specific predictions
-    try:
-        if dataset == 'hetionet':
-            predictions = process_hetionet(term, genes, model, triples_factory)
-        elif dataset == 'biokg':
-            predictions = process_biokg(term, genes, terms_hash_table, model, triples_factory)
-        elif dataset == 'openbiolink':
-            predictions = process_openbiolink(term, genes, terms_hash_table, model, triples_factory)
-        elif dataset == 'primekg':
-            predictions = process_primekg(term, genes, terms_hash_table, model, triples_factory)
-        else:
-            raise ValueError(f"Unsupported dataset: {dataset}")
+    for i, term in enumerate(terms, 1):
+        print(f"\n[{i}/{len(terms)}] Term: {term}")
         
-        # Save results
-        print()
-        save_predictions(predictions, term)
-        print()
-        print("Processing complete!")
+        # Check if term exists in the model's entity vocabulary
+        if term not in entity_vocab:
+            print(f"  Warning: Term '{term}' not in model vocabulary, writing empty predictions")
+            filename = re.sub(r'[^\w_.-]', '_', term)
+            pd.DataFrame().to_csv(f'{filename}_predictions.csv', header=False)
+            continue
         
-    except Exception as e:
-        print(f"Error during prediction: {e}")
-        sys.exit(1)
+        # Process dataset-specific predictions
+        try:
+            if dataset == 'hetionet':
+                predictions = process_hetionet(term, genes, model, triples_factory)
+            elif dataset == 'biokg':
+                predictions = process_biokg(term, genes, terms_hash_table, model, triples_factory)
+            elif dataset == 'openbiolink':
+                predictions = process_openbiolink(term, genes, terms_hash_table, model, triples_factory)
+            elif dataset == 'primekg':
+                predictions = process_primekg(term, genes, terms_hash_table, model, triples_factory)
+            else:
+                raise ValueError(f"Unsupported dataset: {dataset}")
+            
+            save_predictions(predictions, term)
+            
+        except Exception as e:
+            print(f"Error during prediction for term '{term}': {e}")
+            sys.exit(1)
+    
+    print(f"\nAll {len(terms)} terms processed successfully!")
 
 
 if __name__ == '__main__':
