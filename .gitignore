@@ -9,3 +9,4 @@ conf/az-registry.config
 .amlignore*
 .terraform*
 .venv
+**__pycache__**
