@@ -3,3 +3,4 @@ numpy
 pykeen==1.11.0
 torch
 s3fs
+pyarrow

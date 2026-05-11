@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/alethiotx/artemis-kgs-link-predictions/main/nextflow_schema.json",
+  "title": "artemis-kgs-link-predictions pipeline parameters",
+  "description": "Knowledge Graph Link Prediction Pipeline",
+  "type": "object",
+  "properties": {
+    "dataset": {
+      "type": "string",
+      "description": "Knowledge graph dataset to process.",
+      "enum": ["hetionet", "biokg", "openbiolink", "primekg"],
+      "help_text": "Select the biomedical knowledge graph dataset to generate predictions for."
+    },
+    "embeddings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["ComplEx", "DistMult", "RotatE", "TransE"]
+      },
+      "default": ["ComplEx", "DistMult", "RotatE", "TransE"],
+      "description": "Embedding models to run.",
+      "help_text": "Select which embedding models to use for predictions. By default all 4 models are run."
+    },
+    "env": {
+      "type": "string",
+      "default": "prod",
+      "description": "Environment mode.",
+      "enum": ["prod", "test"],
+      "help_text": "'prod' runs all terms. 'test' limits to 2 terms per embedding for quick validation."
+    },
+    "sample": {
+      "type": "boolean",
+      "default": true,
+      "description": "Downsample terms to 10,000.",
+      "help_text": "When true, randomly sample 10,000 terms (seed=42) for faster processing. Set to false to process all terms."
+    },
+    "outdir": {
+      "type": "string",
+      "default": "s3://alethiotx-artemis/data/kgs-no-data-leakage/associations/",
+      "description": "Output directory for results.",
+      "format": "directory-path",
+      "help_text": "The output directory where results will be published. Can be a local path or S3 URI."
+    },
+    "s3_embeddings_base": {
+      "type": "string",
+      "default": "s3://alethiotx-artemis/data/kgs-no-data-leakage/embeddings",
+      "description": "S3 base path for upstream embedding artifacts.",
+      "help_text": "Base S3 path where trained models and training triples are stored. Models are resolved at {base}/{dataset}/{embedding}/trained_model.pkl."
+    }
+  },
+  "required": ["dataset"]
+}
