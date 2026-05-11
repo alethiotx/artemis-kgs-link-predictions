@@ -62,10 +62,10 @@ A network of biology and disease knowledge integrating 47,031 nodes (11 types) a
 
 ### BioKG
 Comprehensive biomedical knowledge graph focusing on proteins, diseases, drugs, and pathways. Uses metadata files (biokg.metadata.protein.tsv, biokg.metadata.disease.tsv, biokg.metadata.pathway.tsv, biokg.metadata.drug.tsv) and links file (biokg.links.tsv) for extraction. Extracts:
-- Human Proteins (filtered by SPECIES='HUMAN')
+- Human Proteins (PPI, Protein-Protein Interaction)
 - Diseases (PROTEIN_DISEASE_ASSOCIATION)
 - Pathways (PROTEIN_PATHWAY_ASSOCIATION)
-- Drugs (Drug-Protein Interaction, reverse direction)
+- Drugs (DPI, Drug-Protein Interaction, reverse direction)
 - Protein Complexes (MEMBER_OF_COMPLEX)
 - Genetic Disorders (RELATED_GENETIC_DISORDER)
 
@@ -277,6 +277,10 @@ done
 
 ## Configuration
 
+### Parameter Schema ([nextflow_schema.json](nextflow_schema.json))
+
+Defines parameter types, defaults, and validation rules for Seqera Platform integration. Ensures `--dataset` is required and restricts values to the supported datasets and embedding models.
+
 ### Base Configuration ([conf/base.config](conf/base.config))
 
 Defines resource allocation for process labels:
@@ -438,6 +442,20 @@ Aggregates predictions and maps IDs to human-readable names.
 - `load_data()`: Loads combined predictions from metafile, transposes to genes×terms format
 - `process_predictions()`: Maps IDs to names, sorts columns alphabetically, removes duplicates
 - `save_predictions()`: Saves final predictions in both CSV and Parquet formats with file size statistics
+
+### [check_sampling.py](check_sampling.py)
+Utility script for comparing random vs. stratified term sampling strategies across knowledge graphs.
+
+**Usage:** `./check_sampling.py [dataset ...]`
+
+For each dataset, the script:
+1. Loads the dataset via PyKEEN
+2. Assigns entity types (same logic as prepare.py)
+3. Shows the full type distribution
+4. Compares random vs. stratified sampling at 10,000 entities
+5. Reports representation ratios and lost/gained types
+
+This is a development/analysis tool and is not part of the pipeline execution.
 
 ## Docker Image
 
